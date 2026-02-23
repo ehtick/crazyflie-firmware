@@ -128,6 +128,14 @@ static uwbAlgorithm_t *algorithm = &uwbTwrTagAlgorithm;
 static bool isInit = false;
 static TaskHandle_t uwbTaskHandle = 0;
 static SemaphoreHandle_t algoSemaphore;
+
+// Guard counter: ISR fires before the UWB task handle is valid are dropped safely
+static volatile uint32_t isrBeforeTaskReady = 0;
+
+// Event counters for mode-switch diagnostics
+static uint32_t dbgRxCount = 0;
+static uint32_t dbgTimeoutCount = 0;
+static uint32_t dbgFailedCount = 0;
 static dwDevice_t dwm_device;
 static dwDevice_t *dwm = &dwm_device;
 
@@ -169,14 +177,17 @@ static void txCallback(dwDevice_t *dev)
 
 static void rxCallback(dwDevice_t *dev)
 {
+  dbgRxCount++;
   timeout = algorithm->onEvent(dev, eventPacketReceived);
 }
 
 static void rxTimeoutCallback(dwDevice_t * dev) {
+  dbgTimeoutCount++;
   timeout = algorithm->onEvent(dev, eventReceiveTimeout);
 }
 
 static void rxFailedCallback(dwDevice_t * dev) {
+  dbgFailedCount++;
   timeout = algorithm->onEvent(dev, eventReceiveFailed);
 }
 
@@ -282,11 +293,25 @@ static bool switchToMode(const lpsMode_t newMode) {
   bool result = false;
 
   if (lpsMode_auto != newMode && newMode <= LPS_NUMBER_OF_ALGORITHMS) {
+    // Print stats for the mode we are leaving before resetting counters
+    DEBUG_PRINT("DWM: leaving %s -> going to %s (rx=%lu timeout=%lu failed=%lu)\n",
+                algorithmsList[algoOptions.currentRangingMode].name,
+                algorithmsList[newMode].name,
+                (unsigned long)dbgRxCount,
+                (unsigned long)dbgTimeoutCount,
+                (unsigned long)dbgFailedCount);
+    dbgRxCount = 0;
+    dbgTimeoutCount = 0;
+    dbgFailedCount = 0;
+
     algoOptions.currentRangingMode = newMode;
     algorithm = algorithmsList[algoOptions.currentRangingMode].algorithm;
 
     algorithm->init(dwm);
     timeout = algorithm->onEvent(dwm, eventTimeout);
+    DEBUG_PRINT("DWM: mode %s init done, first timeout=%lu ms\n",
+                algorithmsList[algoOptions.currentRangingMode].name,
+                (unsigned long)timeout);
 
     result = true;
   }
@@ -321,8 +346,17 @@ static void processAutoModeSwitching() {
         if (algorithm->isRangingOk()) {
           // We have found an algorithm, stop searching and lock to it.
           algoOptions.modeAutoSearchActive = false;
-          DEBUG_PRINT("Automatic mode: detected %s\n", algorithmsList[algoOptions.currentRangingMode].name);
+          DEBUG_PRINT("Automatic mode: detected %s (rx=%lu timeout=%lu failed=%lu)\n",
+                      algorithmsList[algoOptions.currentRangingMode].name,
+                      (unsigned long)dbgRxCount,
+                      (unsigned long)dbgTimeoutCount,
+                      (unsigned long)dbgFailedCount);
         } else {
+          DEBUG_PRINT("DWM: %s ranging NOT ok (rx=%lu timeout=%lu failed=%lu), trying next\n",
+                      algorithmsList[algoOptions.currentRangingMode].name,
+                      (unsigned long)dbgRxCount,
+                      (unsigned long)dbgTimeoutCount,
+                      (unsigned long)dbgFailedCount);
           lpsMode_t newMode = autoModeSearchGetNextMode();
           autoModeSearchTryMode(newMode, now);
         }
@@ -437,6 +471,12 @@ static void spiRead(dwDevice_t* dev, const void *header, size_t headerLength,
   {
     portBASE_TYPE  xHigherPriorityTaskWoken = pdFALSE;
 
+    if (uwbTaskHandle == 0) {
+      // ISR fired before uwbTask was created - count it, skip notification
+      isrBeforeTaskReady++;
+      return;
+    }
+
     // Unlock interrupt handling task
     vTaskNotifyGiveFromISR(uwbTaskHandle, &xHigherPriorityTaskWoken);
 
@@ -453,7 +493,7 @@ static void spiSetSpeed(dwDevice_t* dev, dwSpiSpeed_t speed)
   }
   else if (speed == dwSpiSpeedHigh)
   {
-    spiSpeed = SPI_BAUDRATE_21MHZ;
+    spiSpeed = SPI_BAUDRATE_12MHZ;
   }
 }
 
@@ -540,6 +580,14 @@ static void dwm1000Init(DeckInfo *info)
   dwSetReceiveWaitTimeout(dwm, DEFAULT_RX_TIMEOUT);
 
   dwCommitConfiguration(dwm);
+
+  // Verify the DW1000 is still responding over SPI after configuration.
+  // 0xFFFFFFFF means the chip's SPI interface is unresponsive (MISO floating).
+  if (dwSpiRead32(dwm, SYS_MASK, NO_SUB) == 0xFFFFFFFFul) {
+    DEBUG_PRINT("DWM: ERROR - DW1000 not responding after configure (SPI issue). Deck will not work.\n");
+    isInit = false;
+    return;
+  }
 
   memoryRegisterHandler(&memDef);
 
