@@ -129,9 +129,6 @@ static bool isInit = false;
 static TaskHandle_t uwbTaskHandle = 0;
 static SemaphoreHandle_t algoSemaphore;
 
-// Guard counter: ISR fires before the UWB task handle is valid are dropped safely
-static volatile uint32_t isrBeforeTaskReady = 0;
-
 // Event counters for mode-switch diagnostics
 static uint32_t dbgRxCount = 0;
 static uint32_t dbgTimeoutCount = 0;
@@ -471,12 +468,6 @@ static void spiRead(dwDevice_t* dev, const void *header, size_t headerLength,
   {
     portBASE_TYPE  xHigherPriorityTaskWoken = pdFALSE;
 
-    if (uwbTaskHandle == 0) {
-      // ISR fired before uwbTask was created - count it, skip notification
-      isrBeforeTaskReady++;
-      return;
-    }
-
     // Unlock interrupt handling task
     vTaskNotifyGiveFromISR(uwbTaskHandle, &xHigherPriorityTaskWoken);
 
@@ -516,15 +507,6 @@ static void dwm1000Init(DeckInfo *info)
   EXTI_InitTypeDef EXTI_InitStructure;
 
   spiBegin();
-
-  // Set up interrupt
-  SYSCFG_EXTILineConfig(EXTI_PortSource, EXTI_PinSource);
-
-  EXTI_InitStructure.EXTI_Line = EXTI_LineN;
-  EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
-  EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Rising;
-  EXTI_InitStructure.EXTI_LineCmd = ENABLE;
-  EXTI_Init(&EXTI_InitStructure);
 
   // Init pins
   pinMode(CS_PIN, OUTPUT);
@@ -595,6 +577,15 @@ static void dwm1000Init(DeckInfo *info)
 
   xTaskCreate(uwbTask, LPS_DECK_TASK_NAME, LPS_DECK_STACKSIZE, NULL,
                     LPS_DECK_TASK_PRI, &uwbTaskHandle);
+
+  // Set up interrupt
+  SYSCFG_EXTILineConfig(EXTI_PortSource, EXTI_PinSource);
+
+  EXTI_InitStructure.EXTI_Line = EXTI_LineN;
+  EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
+  EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Rising;
+  EXTI_InitStructure.EXTI_LineCmd = ENABLE;
+  EXTI_Init(&EXTI_InitStructure);
 
   isInit = true;
 }
