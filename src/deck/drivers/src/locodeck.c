@@ -484,7 +484,17 @@ static void spiSetSpeed(dwDevice_t* dev, dwSpiSpeed_t speed)
   }
   else if (speed == dwSpiSpeedHigh)
   {
+#if defined(CONFIG_DECK_LOCO_SPI_SPEED_12MHZ)
     spiSpeed = SPI_BAUDRATE_12MHZ;
+#elif defined(CONFIG_DECK_LOCO_SPI_SPEED_6MHZ)
+    spiSpeed = SPI_BAUDRATE_6MHZ;
+#elif defined(CONFIG_DECK_LOCO_SPI_SPEED_3MHZ)
+    spiSpeed = SPI_BAUDRATE_3MHZ;
+#elif defined(CONFIG_DECK_LOCO_SPI_SPEED_2MHZ)
+    spiSpeed = SPI_BAUDRATE_2MHZ;
+#else
+    spiSpeed = SPI_BAUDRATE_21MHZ;
+#endif
   }
 }
 
