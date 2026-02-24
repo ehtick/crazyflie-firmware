@@ -114,8 +114,9 @@ typedef float * (*paramGetterFloat)(void);
       .extended_type = (((TYPE) & 0xFF00) >> 8), \
       .name = #NAME, \
       .address = (void*)(ADDRESS), \
-      .callback = (void *)CALLBACK, \
-      .getter = (void *)DEFAULT_GETTER, },
+      .callback = (void (*) (void)) CALLBACK, \
+      .getter = (void *(*)(void))DEFAULT_GETTER, },
+
 // Storing (TYPE) & 0xFF instead of just (TYPE) in the first branch is a no-op,
 // but it prevents noisy spurious warnings when compiling bindings with Clang.
 
